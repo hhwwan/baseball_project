@@ -1,13 +1,21 @@
-import os
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
-
-# 오늘 날짜 설정 (폴더명용)
+import boto3
+import time
+import random
+from bs4 import BeautifulSoup
 from datetime import datetime
-today = '20250323'
-save_folder = f'./{today}'
-os.makedirs(save_folder, exist_ok=True)
+from io import StringIO
+
+# AWS S3 설정
+s3 = boto3.client('s3', region_name='us-east-1')
+bucket_name = 'hwan-baseball-bucket'
+
+# 오늘 날짜
+today = datetime.now().strftime('%Y%m%d')
+year = today[:4]
+month = today[4:6]
+day = today[6:8]
 
 # 기록별 컬럼 미리 지정
 columns_dict = {
@@ -21,16 +29,16 @@ columns_dict = {
                 "송구 실책", "병살상황 자살", "병살상황 보살"]
 }
 
-# 5경기 반복 (01~05)
-start_no = 20250006
+# 시작 url 주소 번호 (임시)
+start_no = 20250036
 
+# 하루에 5경기 진행
 for game_offset in range(5):
     s_no = start_no + game_offset
     url = f'https://statiz.sporki.com/schedule/?m=boxscore&s_no={s_no}'
     
-    # 요청 보내기
     response = requests.get(url)
-    
+
     # 페이지가 없거나 실패하면 넘어가기
     if response.status_code != 200:
         print(f"경기 {s_no} 데이터 없음 (status {response.status_code}), 스킵합니다.")
@@ -38,12 +46,10 @@ for game_offset in range(5):
     
     # BeautifulSoup 객체 생성
     soup = BeautifulSoup(response.text, 'html.parser')
-
-    # box_head, table_type03 각각 매칭
     box_heads = soup.find_all('div', class_='box_head')
     tables = soup.find_all('div', class_='table_type03')
 
-    # 팀별 기록 저장
+    # 팀별 선수 기록 저장
     for head, table in zip(box_heads, tables):
         title_text = head.get_text(strip=True)
         
@@ -87,10 +93,17 @@ for game_offset in range(5):
                 temp_df = pd.DataFrame([data], columns=columns)
                 df = pd.concat([df, temp_df], ignore_index=True)
 
-        # 파일명: 날짜폴더/경기번호_기록명_(팀명).csv
-        file_name = f"{s_no}_{title_text.replace(' ', '_')}.csv"
-        file_path = os.path.join(save_folder, file_name)
+        # 파일명: 연도/월/일/오늘날짜_기록명_(팀명).csv
+        s3_path = f"{year}/{month}/{day}/{today}_{title_text.replace(' ', '_')}.csv"
 
-        # CSV 저장
-        df.to_csv(file_path, index=False, encoding='utf-8-sig')
-        print(f"파일 저장 완료: {file_path}")
+        # DataFrame을 메모리에 CSV로 저장
+        csv_buffer = StringIO()
+        df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+
+        # S3 업로드
+        s3.put_object(Bucket=bucket_name, Key=s3_path, Body=csv_buffer.getvalue(), ContentType='text/csv')
+
+        print(f"S3 업로드 완료: s3://{bucket_name}/{s3_path}")
+
+        # ✅ 요청 끝나고, 다음 요청 전에 1~3초 랜덤 딜레이 주기
+        time.sleep(random.uniform(1, 3))
